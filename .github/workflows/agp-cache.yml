@@ -1,0 +1,89 @@
+name: Download Android Gradle Plugin 8.2.0 dependencies
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/agp-cache.yml'
+
+jobs:
+  create-offline-cache:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Install JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Gradle 8.2
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.2'
+          cache-disabled: true
+
+      - name: Create minimal Gradle projects
+        shell: bash
+        run: |
+          mkdir -p agp-cache-seed agp-plugin-marker
+          cat > agp-cache-seed/settings.gradle <<'EOF'
+          rootProject.name = 'agp-cache-seed'
+          EOF
+          cat > agp-cache-seed/build.gradle <<'EOF'
+          buildscript {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+              dependencies {
+                  classpath 'com.android.tools.build:gradle:8.2.0'
+              }
+          }
+          EOF
+          cat > agp-plugin-marker/settings.gradle <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          rootProject.name = 'agp-plugin-marker'
+          EOF
+          cat > agp-plugin-marker/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application' version '8.2.0' apply false
+          }
+          EOF
+
+      - name: Download AGP 8.2.0 and its transitive dependencies
+        shell: bash
+        run: |
+          gradle --no-daemon -p agp-cache-seed help
+          gradle --no-daemon -p agp-plugin-marker help
+          test -d "$HOME/.gradle/caches/modules-2/files-2.1/com.android.tools.build/gradle/8.2.0"
+
+      - name: Verify plugin dependency cache works offline
+        shell: bash
+        run: |
+          gradle --offline --no-daemon -p agp-cache-seed help
+          gradle --offline --no-daemon -p agp-plugin-marker help
+
+      - name: Package full Gradle module cache
+        shell: bash
+        run: |
+          cd "$HOME/.gradle/caches"
+          zip -qr "$GITHUB_WORKSPACE/AGP-8.2.0-FULL-OFFLINE-CACHE.zip" modules-2 -x '*.lock' '*/gc.properties'
+          unzip -tqq "$GITHUB_WORKSPACE/AGP-8.2.0-FULL-OFFLINE-CACHE.zip"
+          ls -lh "$GITHUB_WORKSPACE/AGP-8.2.0-FULL-OFFLINE-CACHE.zip"
+
+      - name: Upload cache ZIP for download
+        uses: actions/upload-artifact@v4
+        with:
+          name: AGP-8.2.0-full-offline-cache
+          path: AGP-8.2.0-FULL-OFFLINE-CACHE.zip
+          if-no-files-found: error
+          retention-days: 7
