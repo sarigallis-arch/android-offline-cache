@@ -1,0 +1,65 @@
+name: Gearhead Quest 3 - Offline Android Dependencies
+
+on:
+  workflow_dispatch:
+
+jobs:
+  download-dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle 8.2
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: '8.2'
+          cache-disabled: true
+
+      - name: Download the missing dependencies and transitives
+        shell: bash
+        run: |
+          mkdir -p seed
+          cat > seed/settings.gradle <<'GRADLE'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          rootProject.name = 'gearhead-offline-seed'
+          GRADLE
+          cat > seed/build.gradle <<'GRADLE'
+          plugins { id 'base' }
+          repositories { google(); mavenCentral() }
+          configurations { offlineDeps }
+          dependencies {
+              offlineDeps 'org.jetbrains.kotlin:kotlin-stdlib:1.9.20'
+              offlineDeps 'androidx.fragment:fragment:1.7.1'
+              offlineDeps 'androidx.core:core-splashscreen:1.0.1'
+          }
+          tasks.register('downloadDeps') {
+              doLast {
+                  configurations.offlineDeps.resolvedConfiguration.resolvedArtifacts.each { artifact ->
+                      println "Resolved ${artifact.moduleVersion.id}: ${artifact.file.name}"
+                  }
+              }
+          }
+          GRADLE
+          gradle --no-daemon -p seed downloadDeps
+
+      - name: Verify cache resolves offline
+        shell: bash
+        run: gradle --offline --no-daemon -p seed downloadDeps
+
+      - name: Package Gradle module cache
+        shell: bash
+        run: |
+          cd "$HOME/.gradle/caches"
+          zip -qr "$GITHUB_WORKSPACE/Gearhead-Quest3-Gradle-Offline-Cache.zip" modules-2 -x '*.lock' '*/gc.properties'
+          unzip -tqq "$GITHUB_WORKSPACE/Gearhead-Quest3-Gradle-Offline-Cache.zip"
+
+      - name: Upload downloadable cache
+        uses: actions/upload-artifact@v4
+        with:
+          name: Gearhead-Quest3-Gradle-Offline-Cache
+          path: Gearhead-Quest3-Gradle-Offline-Cache.zip
+          if-no-files-found: error
