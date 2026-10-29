@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
-      GRADLE_USER_HOME: ${{ runner.temp }}/openmw-gradle-home
+      GRADLE_USER_HOME: /home/runner/.gradle-openmw
     steps:
       - name: Use JDK 17
         uses: actions/setup-java@v4
