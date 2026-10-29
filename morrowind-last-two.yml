@@ -20,7 +20,11 @@ jobs:
           distribution: temurin
           java-version: '17'
       - name: Configure Android SDK
-        uses: android-actions/setup-android@v3
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "ANDROID_HOME=${ANDROID_HOME:-/usr/local/lib/android/sdk}" >> "$GITHUB_ENV"
+          echo "${ANDROID_HOME:-/usr/local/lib/android/sdk}/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
       - name: Install Android SDK Platform and Build Tools 34
         shell: bash
         run: |
@@ -161,10 +165,11 @@ jobs:
           for clone_url in ('https://luajit.org/git/luajit.git','https://github.com/LuaJIT/LuaJIT.git'):
             try:
               subprocess.run(['git','clone','--mirror',clone_url,str(luadir/'luajit.git')],check=True,timeout=180)
-              subprocess.run(['git','-C',str(luadir/'luajit.git'),'rev-parse','v2.1.0-beta3^{commit}'],check=True,timeout=20)
+              # Preserve the mirror even if an upstream tag was renamed or removed.
+              subprocess.run(['git','-C',str(luadir/'luajit.git'),'show-ref'],check=True,timeout=20,stdout=subprocess.DEVNULL)
               subprocess.run(['git','-C',str(luadir/'luajit.git'),'bundle','create',str(luadir/'luajit.bundle'),'--all'],check=True,timeout=120)
               import shutil;shutil.rmtree(luadir/'luajit.git')
-              report.append({'name':'luajit/luajit.bundle','git_tag':'v2.1.0-beta3','sha256':hashlib.sha256((luadir/'luajit.bundle').read_bytes()).hexdigest()})
+              report.append({'name':'luajit/luajit.bundle','note':'mirror; requested tag must be checked before build','sha256':hashlib.sha256((luadir/'luajit.bundle').read_bytes()).hexdigest()})
               break
             except Exception as exc:
               failures.append({'name':'luajit attempt','source':clone_url,'error':str(exc)})
