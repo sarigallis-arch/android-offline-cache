@@ -1,0 +1,219 @@
+name: Morrowind VR - Download Last Two Dependencies
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android-plugin-cache:
+    name: 1 - AGP 8.5.2 complete offline Gradle cache
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      GRADLE_USER_HOME: /home/runner/.gradle-openmw
+    steps:
+      - name: Use JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Configure Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "ANDROID_HOME=${ANDROID_HOME:-/usr/local/lib/android/sdk}" >> "$GITHUB_ENV"
+          echo "${ANDROID_HOME:-/usr/local/lib/android/sdk}/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+      - name: Install Android SDK Platform and Build Tools 34
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platforms;android-34' 'build-tools;34.0.0' 'platform-tools'
+      - name: Use exact Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+          cache-disabled: true
+      - name: Create an OpenMW-compatible Android seed app
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p seed/app/src/main
+          cat > seed/settings.gradle <<'END_SETTINGS'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = 'OpenMWQuestDependencySeed'
+          include ':app'
+          END_SETTINGS
+          cat > seed/build.gradle <<'END_ROOT'
+          plugins { id 'com.android.application' version '8.5.2' apply false }
+          END_ROOT
+          cat > seed/app/build.gradle <<'END_APP'
+          plugins { id 'com.android.application' }
+          android {
+              namespace 'org.openmw.vr.seed'
+              compileSdk 34
+              defaultConfig { applicationId 'org.openmw.vr.seed'; minSdk 29; targetSdk 29 }
+              compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+          }
+          END_APP
+          cat > seed/app/src/main/AndroidManifest.xml <<'END_MANIFEST'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <application android:label="OpenMW build dependency seed" />
+          </manifest>
+          END_MANIFEST
+      - name: Download and prove AGP 8.5.2 dependencies work offline
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle --no-daemon --project-dir seed :app:assembleDebug
+          # Offline run exercises plugin marker, transitive JARs and Android AAPT2.
+          gradle --offline --no-daemon --project-dir seed :app:assembleDebug --rerun-tasks
+      - name: Package complete AGP/Gradle Maven cache
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p deliverables
+          cd "$GRADLE_USER_HOME/caches"
+          zip -qr "$GITHUB_WORKSPACE/deliverables/OpenMW-AGP-8.5.2-Gradle-8.7-Offline-Cache.zip" modules-2 -x '*.lock' '*/gc.properties'
+          cd "$GITHUB_WORKSPACE/deliverables"
+          unzip -tqq OpenMW-AGP-8.5.2-Gradle-8.7-Offline-Cache.zip
+          sha256sum *.zip > SHA256SUMS.txt
+          split -b 250M -d -a 3 OpenMW-AGP-8.5.2-Gradle-8.7-Offline-Cache.zip OpenMW-AGP-8.5.2-Gradle-8.7-Offline-Cache.zip.part-
+          rm OpenMW-AGP-8.5.2-Gradle-8.7-Offline-Cache.zip
+          printf 'Reassemble with: cat OpenMW-AGP-8.5.2-Gradle-8.7-Offline-Cache.zip.part-* > OpenMW-AGP-8.5.2-Gradle-8.7-Offline-Cache.zip\nThen run sha256sum -c SHA256SUMS.txt and unzip into $GRADLE_USER_HOME/caches/. Use Gradle 8.7 with --offline.\n' > RESTORE.txt
+      - name: Upload package 1
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 1-OpenMW-AGP-8.5.2-Offline-Cache
+          path: deliverables/
+          if-no-files-found: error
+          retention-days: 7
+
+  openmw-native-sources:
+    name: 2 - OpenMW 0.51 native C++ source dependencies
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Download pinned native sources and verify release hashes
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p deliverables/workdir/downloads deliverables/workdir/optional-fetchcontent
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess, sys, time, urllib.request
+          root=pathlib.Path('deliverables/workdir')
+          mirror='https://github.com/xyzz/openmw-deps/releases/download/v0/'
+          # These archive versions and hashes are taken from OpenMW-VR Quest 0.51
+          # android/buildscripts/CMakeLists.txt, NOT guessed from latest releases.
+          files=[
+            ('downloads/libjpeg-turbo-1.5.3.tar.gz','sha256:b24890e2bb46e12e72a79f7e965f409f4e16466d00e1dd15d93d73ee6b592523',['https://sourceforge.net/projects/libjpeg-turbo/files/1.5.3/libjpeg-turbo-1.5.3.tar.gz/download',mirror+'libjpeg-turbo-1.5.3.tar.gz']),
+            ('downloads/libpng-1.6.37.tar.xz','sha256:505e70834d35383537b6491e7ae8641f1a4bed1876dbfe361201fc80868d88ca',['https://prdownloads.sourceforge.net/libpng/libpng-1.6.37.tar.xz',mirror+'libpng-1.6.37.tar.xz']),
+            ('downloads/freetype-2.10.4.tar.gz','sha256:5eab795ebb23ac77001cfb68b7d4d50b5d6c7469247b0b01b2c953269f658dac',['https://download.savannah.gnu.org/releases/freetype/freetype-2.10.4.tar.gz',mirror+'freetype-2.10.4.tar.gz']),
+            ('downloads/1.21.1.tar.gz','sha256:8ac17e4e3b32c1af3d5508acfffb838640669b4274606b7892aa796ca9d7467f',['https://github.com/kcat/openal-soft/archive/1.21.1.tar.gz',mirror+'openal-soft-1.21.1.tar.gz']),
+            ('downloads/boost_1_81_0.tar.bz2','sha256:71feeed900fbccca04a3b4f2f84a7c217186f28a940ed8b7ed4725986baf99fa',['https://archives.boost.io/release/1.81.0/source/boost_1_81_0.tar.bz2','https://sourceforge.net/projects/boost/files/boost/1.81.0/boost_1_81_0.tar.bz2/download']),
+            ('downloads/ffmpeg-4.4.tar.bz2','sha256:42093549751b582cf0f338a21a3664f52e0a9fbe0d238d3c992005e493607d0',['https://ffmpeg.org/releases/ffmpeg-4.4.tar.bz2',mirror+'ffmpeg-4.4.tar.bz2']),
+            ('downloads/SDL2-2.0.22.tar.gz',None,['https://www.libsdl.org/release/SDL2-2.0.22.tar.gz']),
+            ('downloads/3.17.tar.gz','sha256:baa642c906576d4d98d041d0acb80d85dd6eff6e3c16a009b1abf1ccd2bc0a61',['https://github.com/bulletphysics/bullet3/archive/3.17.tar.gz',mirror+'bullet3-3.17.tar.gz']),
+            ('downloads/v1.1.4.tar.gz','sha256:b565e717c7d192e936bda25f3cb90ad8db398af56414ec08294b6716574c1a6d',['https://github.com/ptitSeb/gl4es/archive/v1.1.4.tar.gz',mirror+'gl4es-v1.1.4.gz']),
+            ('downloads/MyGUI3.4.3.tar.gz',None,['https://github.com/MyGUI/mygui/archive/MyGUI3.4.3.tar.gz']),
+            ('downloads/v1.9.3.tar.gz','sha256:030644df4611007ff7dc962d981f390361e6c97a34e5cbc393ddfbe019ffe2c1',['https://github.com/lz4/lz4/archive/v1.9.3.tar.gz',mirror+'v1.9.3.tar.gz']),
+            ('downloads/OpenSceneGraph-3.6.5.tar.gz','sha256:aea196550f02974d6d09291c5d83b51ca6a03b3767e234a8c0e21322927d1e12',['https://github.com/openscenegraph/OpenSceneGraph/archive/OpenSceneGraph-3.6.5.tar.gz',mirror+'OpenSceneGraph-3.6.5.tar.gz']),
+            ('downloads/release-70-1.zip','md5:49d5e2e5bab93ae1a4b56e916150544c',['https://github.com/unicode-org/icu/archive/refs/tags/release-70-1.zip']),
+            # Supplementary FetchContent used by OpenMW's own extern/CMakeLists.txt.
+            ('optional-fetchcontent/bullet-3.17.tar.gz','sha512:a5105bf5f1dd365a64a350755c7d2c97942f74897a18dcdb3651e6732fd55cc1030a096f5808cf50575281f05e3ac09aa50a48d271a47b94cd61f5167a72b7cc',['https://github.com/bulletphysics/bullet3/archive/refs/tags/3.17.tar.gz']),
+            ('optional-fetchcontent/MyGUI3.4.3.zip','sha512:c804ef665e786076582367f171082cd2181fdbd214300ddcca4a4245c5a0f45e62e72778ee2d96ec46b393e22477dd729f9bb3006e6eecbf536674e34a057721',['https://github.com/MyGUI/mygui/archive/refs/tags/MyGUI3.4.3.zip']),
+            ('optional-fetchcontent/osg-01cc2b58.zip','sha512:9b0a94c1c1d99c767f1857629d43c7a53bfcb74ef760993a121567831e168a1ebbfc10b0c67d7f2241c7b6c6dab2d0e6b876d9f17aca0fabe1a8c86b2279f956',['https://github.com/OpenMW/osg/archive/01cc2b585c8456a4ff843066b7e1a8715558289f.zip']),
+            ('optional-fetchcontent/recast-03259f32.zip','sha512:63db2ac90904764d7f1466d3c95994ec51d777cddd870b70f8ef674c09ed166b3d16ffc4ac1d18d0eab865fda4bf51b6ea17049025b66a338d3cadd0f48dc712',['https://github.com/OpenMW/recastnavigation/archive/03259f3287ff8330f0d66fcd98d022edddffaa97.zip']),
+            ('optional-fetchcontent/sqlite-amalgamation-3410100.zip','sha512:7de291709e88fffc693cf24ac675950cfc35c1bf7631cfea95167105720a05cf37fb943c57c5c985db2eeaa57b31894b3c0df98a7bd2939b5746fc5a24b5ae87',['https://www.sqlite.org/2023/sqlite-amalgamation-3410100.zip']),
+          ]
+          report=[]; failures=[]
+          for name, expected, urls in files:
+            out=root/name; out.parent.mkdir(parents=True,exist_ok=True)
+            success=False; errors=[]
+            for url in urls:
+              for attempt in (1,2):
+                try:
+                  print('Fetching',name, 'from',url,flush=True)
+                  req=urllib.request.Request(url,headers={'User-Agent':'OpenMWQuest-dependency-downloader/1.0'})
+                  with urllib.request.urlopen(req,timeout=90) as src,open(str(out)+'.tmp','wb') as dst:
+                    import shutil; shutil.copyfileobj(src,dst)
+                  if expected:
+                    algo,sha=expected.split(':',1)
+                    h=hashlib.new(algo)
+                    with open(str(out)+'.tmp','rb') as fp:
+                      for chunk in iter(lambda:fp.read(1048576),b''):h.update(chunk)
+                    if h.hexdigest()!=sha:raise ValueError('hash mismatch; refusing source archive')
+                  if os.path.getsize(str(out)+'.tmp')<100:raise ValueError('empty download')
+                  os.replace(str(out)+'.tmp',out)
+                  success=True;break
+                except Exception as exc:
+                  errors.append(f'{url}: {exc}');time.sleep(2)
+                  try:os.unlink(str(out)+'.tmp')
+                  except FileNotFoundError:pass
+              if success:break
+            if success:
+              report.append({'name':name,'bytes':out.stat().st_size,'expected':expected,'sha256':hashlib.sha256(out.read_bytes()).hexdigest()})
+            else:
+              failures.append({'name':name,'errors':errors})
+          # LuaJIT is a Git source in the engine CMake, not a tarball.
+          luadir=root/'luajit';luadir.mkdir(exist_ok=True)
+          for clone_url in ('https://luajit.org/git/luajit.git','https://github.com/LuaJIT/LuaJIT.git'):
+            try:
+              subprocess.run(['git','clone','--mirror',clone_url,str(luadir/'luajit.git')],check=True,timeout=180)
+              # Preserve the mirror even if an upstream tag was renamed or removed.
+              subprocess.run(['git','-C',str(luadir/'luajit.git'),'show-ref'],check=True,timeout=20,stdout=subprocess.DEVNULL)
+              subprocess.run(['git','-C',str(luadir/'luajit.git'),'bundle','create',str(luadir/'luajit.bundle'),'--all'],check=True,timeout=120)
+              import shutil;shutil.rmtree(luadir/'luajit.git')
+              report.append({'name':'luajit/luajit.bundle','note':'mirror; requested tag must be checked before build','sha256':hashlib.sha256((luadir/'luajit.bundle').read_bytes()).hexdigest()})
+              break
+            except Exception as exc:
+              failures.append({'name':'luajit attempt','source':clone_url,'error':str(exc)})
+              import shutil;shutil.rmtree(luadir/'luajit.git',ignore_errors=True)
+          # If fallback succeeded, remove earlier LuaJIT attempt warning.
+          if (luadir/'luajit.bundle').is_file(): failures=[x for x in failures if x['name']!='luajit attempt']
+          (root/'DOWNLOAD_REPORT.json').write_text(json.dumps({'downloaded':report,'failed':failures},indent=2))
+          if failures:
+            print('FAILED to obtain all native source archives. Inspect DOWNLOAD_REPORT.json',file=sys.stderr)
+            sys.exit(1)
+          print('Successfully fetched',len(report),'native source dependencies')
+          PY
+      - name: Pack and split dependency sources for ChatGPT uploads
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd deliverables
+          # Archive contains downloads/ ready for OpenMW-VR android/buildscripts/.
+          (cd workdir && zip -q -0 -r ../OpenMW-0.51-Native-Sources.zip downloads optional-fetchcontent luajit DOWNLOAD_REPORT.json)
+          unzip -tqq OpenMW-0.51-Native-Sources.zip
+          sha256sum OpenMW-0.51-Native-Sources.zip > SHA256SUMS.txt
+          split -b 250M -d -a 3 OpenMW-0.51-Native-Sources.zip OpenMW-0.51-Native-Sources.zip.part-
+          rm OpenMW-0.51-Native-Sources.zip
+          cat > RESTORE.txt <<'END_HELP'
+          Reassemble in filename order:
+            cat OpenMW-0.51-Native-Sources.zip.part-* > OpenMW-0.51-Native-Sources.zip
+            sha256sum -c SHA256SUMS.txt
+            unzip OpenMW-0.51-Native-Sources.zip
+          Place the extracted downloads/ files into
+            OpenMW-VR/android/buildscripts/downloads/
+          optional-fetchcontent/ contains sources for secondary CMake FetchContent
+          (these may need explicit source path overrides to work offline).
+          luajit/luajit.bundle contains a Git mirror snapshot; the LuaJIT
+          ExternalProject Git URL still needs a local URL override when offline.
+          All required archives have been downloaded and hashed, but they are
+          not precompiled Android .so or .a native libraries.
+          END_HELP
+          rm -rf workdir
+      - name: Upload package 2
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 2-OpenMW-0.51-Native-Cpp-Sources
+          path: deliverables/
+          if-no-files-found: warn
+          retention-days: 7
